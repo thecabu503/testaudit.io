@@ -1,0 +1,913 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>CNC-1 Audit (Smart Lot + Part# + Camera Login)</title>
+    
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://unpkg.com/jspdf-autotable@3.5.25/dist/jspdf.plugin.autotable.js"></script>
+    
+    <script src="https://unpkg.com/html5-qrcode" crossorigin></script>
+
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600;700&display=swap" rel="stylesheet">
+    
+    <style>
+        /* Global Styles & Animations */
+        body { font-family: 'Sarabun', sans-serif; background-color: #f1f5f9; }
+        .error-shake { animation: shake 0.4s cubic-bezier(.36,.07,.19,.97) both; border-color: #ef4444 !important; background-color: #fef2f2 !important; }
+        @keyframes shake { 10%, 90% { transform: translate3d(-1px, 0, 0); } 20%, 80% { transform: translate3d(2px, 0, 0); } 30%, 50%, 70% { transform: translate3d(-4px, 0, 0); } 40%, 60% { transform: translate3d(4px, 0, 0); } }
+        .fade-in { animation: fadeIn 0.3s ease-in; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .modal-enter { animation: modalIn 0.3s ease-out; }
+        @keyframes modalIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+        .custom-radio:checked + div { background-color: #e0f2fe; border-color: #0ea5e9; color: #0284c7; font-weight: bold; }
+        .custom-checkbox:checked + div { background-color: #0ea5e9; border-color: #0ea5e9; color: white; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        // --- 1. CONFIGURATION ---
+        const TECHNICIANS = ['Tech-001 (Somsak)', 'Tech-002 (Wichai)', 'Tech-003 (Mana)', 'Tech-004 (Jiraporn)'];
+        const NUM_OPTIONS = Array.from({length: 41}, (_, i) => String(i));
+        
+        const CHECKLIST_QUESTIONS_P2 = [
+            { id: 'q1', question: '1.ตรวจสอบอุปกรณ์รับงานจะต้องไม่มีชิ้นงานตกหล่นหรือติดค้างอยู่', isMatrix: true, subItems: ['1.1 ท่อรับงาน', '1.2 ตะกร้ารับงาน', '1.3 Separetor', '1.4 Conveyer', '1.5 Rotary Table', '1.6 Back Chuck'], options: ['ไม่มี', '-'] },
+            { id: 'q2', question: '2.เช็คตำแหน่งของสายน้ำมัน Cutting oil ต้องฉีดโดนชิ้นงานเท่านั้น', options: ['ตรง', 'ไม่ตรง'] },
+            { id: 'q3', question: '3.มีการลง Information ในเอกสาร PCT เกี่ยวกับรายละเอียดการแก้ไขหรือไม่', options: ['มี', 'ไม่มี'] },
+            { id: 'q4', question: '4.ตรวจสอบความถูกต้องในการลง Spec ในใบ Inspection Standard Sheet', options: ['ถูกต้อง', 'ไม่ถูกต้อง'] },
+            { id: 'q5', question: '5.มีการแยก Lot No. ของงานระหว่างการแก้ไข ก่อนการแก้ไข และหลังการแก้ไข', options: ['แยก', 'ไม่แยก'] },
+            { id: 'q6', question: '6.หมายเลข Tool No.และ Counter ของ Tool Lifeใน M/C ตรงกับ Tool Layout ก่อนเปิดเครื่องจักร', options: ['ตรง', 'ไม่ตรง'] },
+            { id: 'q7', question: '7.เช็คแรงดัน Bar ตามป้ายที่กำหนด(ลงค่าที่เช็ค)', options: ['ตรง', 'Other'], hasInput: true },
+            { id: 'q8', question: '8.การรับงานได้ที่ 100% (เปิดงาน 3 ตัวแล้วตรวจสอบว่างานออกมาครบหรือไม่)', options: ['ครบ', 'ไม่ครบ'] },
+            { id: 'q9', question: '9.ตรวจสอบ ปุ่มกด Block skip ต้องมี Cover ปิด (เฉพาะ M/C Type SB-16D-E, SB-20E, SB-23E, SB-32J)', options: ['มี', '-', 'Other'], hasInput: true }
+        ];
+
+        // --- 2. LOCAL STORAGE DB ---
+        const DB_KEY_LOGS = 'cnc_audit_logs';
+        const DB_KEY_PARTS = 'cnc_parts_db';
+        const DB_KEY_PARTS_DATE = 'cnc_parts_date';
+        const DB_KEY_USER = 'cnc_user';
+
+        const saveLog = (logData) => {
+            const currentLogs = JSON.parse(localStorage.getItem(DB_KEY_LOGS) || '[]');
+            currentLogs.unshift(logData);
+            localStorage.setItem(DB_KEY_LOGS, JSON.stringify(currentLogs));
+        };
+
+        const getLogs = () => JSON.parse(localStorage.getItem(DB_KEY_LOGS) || '[]');
+
+        // --- 3. COMPONENTS ---
+        
+        // 🚨 ข้อมูลฟอนต์ภาษาไทย (Thai Font Base64) 🚨
+        const THAI_FONT_BASE64 = 'AAEAAAALA... (Base64 string ที่ยาวมากๆ ของคุณ)'; 
+        const THAI_FONT_NAME = 'THSarabunNew';
+
+        const registerThaiFont = (doc) => {
+            if (THAI_FONT_BASE64.startsWith('ใส่')) {
+                console.error("WARNING: กรุณาใส่ Base64 string ของฟอนต์ THSarabunNew เพื่อให้ภาษาไทยแสดงผลได้ถูกต้อง");
+                return; 
+            }
+            // Add the font with the correct name and style
+            doc.addFont(THAI_FONT_BASE64, THAI_FONT_NAME, 'normal');
+        };
+
+        // --- START: NEW RobustScanner Component from log in master ---
+        const RobustScanner = ({ onScanSuccess }) => {
+            const [status, setStatus] = React.useState(null);
+            const [error, setError] = React.useState(null);
+            const [isScanning, setIsScanning] = React.useState(false);
+            const scannerRef = React.useRef(null);
+            const readerId = "reader-container";
+
+            // ตรวจสอบความปลอดภัยก่อนเลย
+            const isSecure = window.isSecureContext; // true ถ้าเป็น https หรือ localhost
+
+            const startCamera = () => {
+                setError(null);
+                setStatus("กำลังขออนุญาตใช้กล้อง...");
+                
+                // ถ้าเปิดผ่าน file:// หรือ http:// ธรรมดา จะเตือนทันที
+                if (!isSecure && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+                    setError("⚠️ ระบบความปลอดภัยของมือถือบล็อกกล้องไว้! \nสาเหตุ: คุณเปิดไฟล์นี้แบบ Offline (file://) หรือ HTTP \nวิธีแก้: ต้องอัปโหลดไฟล์ขึ้น Server ที่เป็น HTTPS เท่านั้น");
+                    return;
+                }
+
+                const html5Qrcode = new Html5Qrcode(readerId);
+                scannerRef.current = html5Qrcode;
+
+                const config = { 
+                    fps: 10, 
+                    qrbox: { width: 250, height: 150 },
+                    aspectRatio: 1.0 
+                };
+
+                // พยายามเปิดกล้องหลัง
+                html5Qrcode.start(
+                    { facingMode: "environment" }, 
+                    config,
+                    (decodedText) => {
+                        setStatus("✅ สแกนสำเร็จ!");
+                        html5Qrcode.stop().then(() => {
+                            setIsScanning(false);
+                            onScanSuccess(decodedText);
+                        });
+                    },
+                    (errorMessage) => {
+                        // ignore failures while scanning
+                    }
+                ).then(() => {
+                    setIsScanning(true);
+                    setStatus("กล้องทำงานแล้ว กรุณาสแกน...");
+                }).catch(err => {
+                    console.error(err);
+                    setIsScanning(false);
+                    setError(`❌ เปิดกล้องไม่สำเร็จ: ${err.message || err}`);
+                });
+            };
+
+            const stopCamera = () => {
+                if (scannerRef.current && scannerRef.current.isScanning) {
+                    scannerRef.current.stop().then(() => {
+                        setIsScanning(false);
+                        setStatus(null);
+                    }).catch(err => console.error(err));
+                }
+            };
+
+            React.useEffect(() => {
+                return () => stopCamera(); // Cleanup on unmount
+            }, []);
+
+            return (
+                <div className="w-full bg-black rounded-xl overflow-hidden shadow-2xl relative flex flex-col items-center justify-center min-h-[320px]">
+                    
+                    {/* พื้นที่แสดงผลกล้อง */}
+                    <div id={readerId} className="w-full h-full absolute inset-0 bg-slate-900"></div>
+
+                    {/* ปุ่มควบคุม (แสดงเมื่อยังไม่สแกน) */}
+                    {!isScanning && (
+                        <div className="z-10 p-6 text-center w-full max-w-xs">
+                            <div className="text-white mb-4 text-4xl"><i className="fas fa-camera"></i></div>
+                            <button 
+                                onClick={startCamera}
+                                className="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-4 rounded-full shadow-lg transition transform active:scale-95"
+                            >
+                                กดปุ่มนี้เพื่อเริ่มกล้อง
+                            </button>
+                            
+                            {!isSecure && (
+                                <div className="mt-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative text-xs text-left">
+                                    <strong className="font-bold">⚠️ คำเตือน:</strong> 
+                                    <span className="block sm:inline"> คุณกำลังเปิดไฟล์นี้แบบไม่ปลอดภัย (Not Secure) กล้องอาจจะไม่ทำงานบน Android/iOS</span>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* ข้อความ Error */}
+                    {error && (
+                        <div className="z-20 absolute inset-0 bg-white/90 flex items-center justify-center p-4 text-center">
+                            <div>
+                                <div className="text-red-500 text-5xl mb-2"><i className="fas fa-times-circle"></i></div>
+                                <h3 className="font-bold text-red-700 mb-2">เกิดข้อผิดพลาด</h3>
+                                <p className="text-sm text-slate-700 whitespace-pre-line">{error}</p>
+                                <button onClick={() => setError(null)} className="mt-4 text-sky-600 underline text-sm">ลองใหม่</button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Overlay ขณะสแกน */}
+                    {isScanning && (
+                        <div className="absolute inset-0 pointer-events-none z-10">
+                            <div className="w-full h-full border-4 border-green-500/30 flex items-center justify-center">
+                                <div className="w-[80%] h-[2px] bg-red-500 shadow-[0_0_15px_red] animate-pulse"></div>
+                            </div>
+                            <button onClick={stopCamera} className="absolute bottom-4 left-1/2 transform -translate-x-1/2 pointer-events-auto bg-red-600/80 text-white px-4 py-2 rounded-full text-xs">
+                                ยกเลิก
+                            </button>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+        // --- END: NEW RobustScanner Component ---
+
+        // --- START: MODIFIED LOGIN SCREEN with Camera/Manual Tabs ---
+        const LoginScreen = ({ onLogin }) => {
+            const [isCameraMode, setIsCameraMode] = React.useState(false);
+            const [manualId, setManualId] = React.useState('');
+
+            return (
+                <div className="flex min-h-screen items-center justify-center bg-slate-800 text-white p-4">
+                    <div className="w-full max-w-sm text-center fade-in">
+                        <div className="text-5xl mb-6 text-blue-400 animate-pulse"><i className="fas fa-industry"></i></div>
+                        <h1 className="text-2xl font-bold mb-8">CNC-1 Audit System</h1>
+                        
+                        {/* Selector Tabs */}
+                        <div className="flex bg-slate-700 p-1 rounded-xl mb-6">
+                            <button 
+                                onClick={() => setIsCameraMode(false)}
+                                className={`flex-1 py-2 rounded-lg text-sm font-bold transition ${!isCameraMode ? 'bg-blue-600 shadow' : 'text-slate-400 hover:text-white'}`}
+                            >
+                                <i className="fas fa-keyboard mr-2"></i>พิมพ์รหัส
+                            </button>
+                            <button 
+                                onClick={() => setIsCameraMode(true)}
+                                className={`flex-1 py-2 rounded-lg text-sm font-bold transition ${isCameraMode ? 'bg-blue-600 shadow' : 'text-slate-400 hover:text-white'}`}
+                            >
+                                <i className="fas fa-camera mr-2"></i>สแกนบัตร
+                            </button>
+                        </div>
+
+                        {/* Mode Content */}
+                        {isCameraMode ? (
+                            <div className="fade-in">
+                                <RobustScanner onScanSuccess={(id) => onLogin(id)} />
+                                <p className="text-xs text-slate-500 mt-4">รองรับ Barcode และ QR Code</p>
+                            </div>
+                        ) : (
+                            <form onSubmit={(e) => { e.preventDefault(); onLogin(manualId); }} className="fade-in bg-slate-700 p-6 rounded-2xl shadow-xl">
+                                <label className="block text-left text-sm font-bold text-slate-300 mb-2">รหัสพนักงาน</label>
+                                <input 
+                                    className="w-full p-4 rounded-xl bg-slate-800 border border-slate-600 text-white text-center text-xl tracking-widest outline-none focus:border-blue-500 transition mb-4" 
+                                    placeholder="เช่น 09123" 
+                                    value={manualId}
+                                    onChange={e => setManualId(e.target.value)}
+                                    autoFocus
+                                />
+                                <button className="w-full bg-blue-500 hover:bg-blue-400 p-4 rounded-xl font-bold shadow-lg transition transform active:scale-95">
+                                    เข้าสู่ระบบ
+                                </button>
+                                <div className="mt-4 text-xs text-slate-400">
+                                    ทดสอบ: <span className="text-blue-300 cursor-pointer underline" onClick={() => setManualId('09123')}>09123</span>
+                                </div>
+                            </form>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+        // --- END: MODIFIED LOGIN SCREEN ---
+
+        const AuditDetailModal = ({ data, onClose }) => {
+            if (!data) return null;
+            
+            const Row = ({ label, value, highlight, fullWidth }) => (
+                <div className={`flex ${fullWidth ? 'flex-col' : 'justify-between'} py-2 border-b border-slate-100 ${highlight ? 'bg-yellow-50 px-2 rounded -mx-2' : ''}`}>
+                    <span className="text-slate-500 text-sm font-semibold">{label}</span>
+                    <span className={`text-sm text-right max-w-[70%] ${highlight ? 'text-red-600' : 'text-slate-800'} ${fullWidth ? 'font-normal text-left max-w-full mt-1 text-slate-700 bg-slate-50 p-1 rounded' : 'font-bold'}`}>{value || '-'}</span>
+                </div>
+            );
+            
+            const handleExportPDF = () => {
+                const doc = new window.jspdf.jsPDF();
+                
+                // 1. ลงทะเบียนฟอนต์ไทย (สำคัญมากสำหรับภาษาไทย)
+                registerThaiFont(doc);
+
+                // 2. กำหนดฟอนต์เริ่มต้น
+                doc.setFont(THAI_FONT_NAME); 
+                
+                // 3. กำหนด Style สำหรับตารางอัตโนมัติ
+                const thaiAutoTableStyles = { 
+                    font: THAI_FONT_NAME, 
+                    fontStyle: 'normal' 
+                };
+                
+                const partNo = data.partNo;
+                const lotNo = data.lotNo;
+                
+                let y = 10;
+                
+                // Title
+                doc.setFontSize(16);
+                doc.text(`รายงาน Audit CNC-1: ${partNo}`, 10, y); 
+                y += 7;
+                doc.setFontSize(10);
+                doc.text(`เลข Lot: ${lotNo}`, 10, y);
+                doc.text(`ผู้ตรวจ: ${data.auditorId}`, 150, y);
+                y += 5;
+                
+                // --- 1. General Info ---
+                doc.setFontSize(12);
+                doc.text("1. ข้อมูลทั่วไป (General Info)", 10, y + 5);
+                
+                doc.autoTable({
+                    startY: y + 8,
+                    head: [['รายการ', 'ข้อมูล']],
+                    body: [
+                        ['Technician', data.technician],
+                        ['Date', data.date],
+                        ['Finish Time', data.finishTime],
+                        ['Audit Type', data.auditType],
+                    ],
+                    theme: 'grid',
+                    headStyles: { fillColor: [200, 200, 200], textColor: [0, 0, 0], ...thaiAutoTableStyles },
+                    styles: thaiAutoTableStyles,
+                });
+                
+                y = doc.autoTable.previous.finalY;
+
+                // --- 2. Part 2 Checklist (Q1 - Q9) ---
+                doc.setFontSize(12);
+                doc.text("2. รายการตรวจสอบ (Checklist Q1 - Q9)", 10, y + 10);
+                y += 13;
+                
+                const checklistBody = [];
+                CHECKLIST_QUESTIONS_P2.forEach(q => {
+                    if (q.isMatrix) {
+                        q.subItems.forEach((sub, i) => {
+                            const answer = data[`${q.id}-${i}`] || '-';
+                            checklistBody.push([`${q.question.substring(0, q.question.indexOf('.'))}.${i+1}. ${sub}`, answer]);
+                        });
+                    } else {
+                        let answer = data[q.id] || '-';
+                        if (q.hasInput && answer === 'Other') {
+                            answer += ` (รายละเอียด: ${data[`${q.id}_input`] || '-'})`;
+                        }
+                        checklistBody.push([q.question, answer]);
+                    }
+                });
+
+                doc.autoTable({
+                    startY: y,
+                    head: [['คำถาม', 'คำตอบ']],
+                    body: checklistBody,
+                    theme: 'grid',
+                    headStyles: { fillColor: [200, 200, 200], textColor: [0, 0, 0], ...thaiAutoTableStyles },
+                    styles: thaiAutoTableStyles,
+                });
+                
+                y = doc.autoTable.previous.finalY;
+
+                // --- 3. Step 3 & 4 (Q10, Final Result) ---
+                doc.setFontSize(12);
+                doc.text("3. Re-setting Count และ ผลลัพธ์สุดท้าย", 10, y + 10);
+                y += 13;
+                
+                const resultBody = [
+                    ['10.1 Clear Count = 0', data.chk10_1 ? 'YES' : 'NO'],
+                    ['10.2 Preset = 10', data.chk10_2 ? 'YES' : 'NO'],
+                    ['10.3 Basket Qty (Split)', data.q10_3_split_qty],
+                    ['10.3 Basket Qty (Full)', data.q10_3_full_qty],
+                    ['10.4 Tech Qty (Split)', data.q10_4_split_qty],
+                    ['10.4 Tech Qty (Full)', data.q10_4_full_qty],
+                    ['Total Count (A)', data.q10_5],
+                    ['Monitor Count (B)', data.q10_6],
+                    ['Result (A=B?)', data.q10_7],
+                    ['Reason for Mismatch', data.reason_mismatch || '-'],
+                    ['Reason for A > 10', data.reason_over10 || '-'],
+                    ['Leader ID (A > 10)', data.leader_id || '-'],
+                    ['Discarded Parts', data.discarded ? 'YES' : 'NO'],
+                    ['Audit Leader ID (Final)', data.auditLeaderId],
+                ];
+
+                doc.autoTable({
+                    startY: y,
+                    head: [['รายการ', 'ค่า']],
+                    body: resultBody,
+                    theme: 'grid',
+                    headStyles: { fillColor: [200, 200, 200], textColor: [0, 0, 0], ...thaiAutoTableStyles },
+                    styles: thaiAutoTableStyles,
+                });
+
+                doc.save(`Audit_Report_${partNo}_${lotNo}.pdf`);
+            };
+
+
+            return (
+                <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 fade-in" onClick={onClose}>
+                    <div className="bg-white w-full max-w-lg h-[90vh] sm:h-auto sm:max-h-[85vh] rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col modal-enter" onClick={e => e.stopPropagation()}>
+                        <div className="p-4 border-b flex justify-between items-center bg-slate-50 rounded-t-2xl">
+                            <div><div className="text-xs text-slate-400 font-bold uppercase">Audit Detail</div><h2 className="text-lg font-bold text-sky-700">{data.partNo}</h2></div>
+                            <button onClick={onClose} className="w-8 h-8 rounded-full bg-white border flex items-center justify-center hover:bg-slate-100 text-slate-500"><i className="fas fa-times"></i></button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-5 space-y-6">
+                            
+                            {/* General Info */}
+                            <div>
+                                <h3 className="text-xs font-bold text-slate-400 uppercase mb-2 bg-slate-100 p-1 rounded inline-block">1. General Info</h3>
+                                <Row label="Audit Type" value={data.auditType} />
+                                <Row label="Date" value={data.date} />
+                                <Row label="Technician" value={data.technician} />
+                                <Row label="Part No." value={data.partNo} highlight={data.partNo.includes('#')} />
+                                <Row label="Lot No." value={data.lotNo} highlight={true} />
+                                <Row label="Finish Time" value={data.finishTime} />
+                                <Row label="Auditor" value={data.auditorId} />
+                            </div>
+
+                            {/* Part 2 Checklist */}
+                            <div>
+                                <h3 className="text-xs font-bold text-slate-400 uppercase mb-2 bg-slate-100 p-1 rounded inline-block">2. Checklist (Q1 - Q9)</h3>
+                                {CHECKLIST_QUESTIONS_P2.map(q => {
+                                    const isMatrix = q.isMatrix;
+                                    const answers = [];
+                                    if (isMatrix) {
+                                        q.subItems.forEach((sub, i) => {
+                                            answers.push(`${sub}: ${data[`${q.id}-${i}`] || '-'}`);
+                                        });
+                                    } else {
+                                        let answer = data[q.id] || '-';
+                                        if (q.hasInput && answer === 'Other') {
+                                            answer += ` (Detail: ${data[`${q.id}_input`] || '-'})`;
+                                        }
+                                        answers.push(answer);
+                                    }
+                                    
+                                    return (
+                                        <Row key={q.id} label={q.question} value={answers.join(' | ')} fullWidth={true} />
+                                    );
+                                })}
+                            </div>
+
+                            {/* Step 3 & 4 */}
+                            <div>
+                                <h3 className="text-xs font-bold text-slate-400 uppercase mb-2 bg-slate-100 p-1 rounded inline-block">3. Re-setting Count & Final</h3>
+                                <Row label="10.1 Clear Count = 0" value={data.chk10_1 ? 'YES' : 'NO'} highlight={!data.chk10_1} />
+                                <Row label="10.2 Preset = 10" value={data.chk10_2 ? 'YES' : 'NO'} highlight={!data.chk10_2} />
+                                <Row label="Basket Split Qty" value={data.q10_3_split_qty} />
+                                <Row label="Basket Full Qty" value={data.q10_3_full_qty} />
+                                <Row label="Tech Split Qty" value={data.q10_4_split_qty} />
+                                <Row label="Tech Full Qty" value={data.q10_4_full_qty} />
+                                <Row label="Total Count (A)" value={data.q10_5} highlight={parseInt(data.q10_5)>10} />
+                                <Row label="Monitor Count (B)" value={data.q10_6} highlight={data.q10_5 !== data.q10_6 && data.q10_6 !== '0'} />
+                                <Row label="Result (A=B?)" value={data.q10_7} highlight={data.q10_7 === 'ไม่เท่ากัน'} />
+                                <Row label="Reason for Mismatch" value={data.reason_mismatch} fullWidth={true} />
+                                {parseInt(data.q10_5)>10 && <Row label="Reason A > 10" value={`${data.reason_over10} (Leader: ${data.leader_id} / Sign: ${data.leader_sign})`} fullWidth={true} highlight={true} />}
+                                <Row label="Discarded Parts" value={data.discarded ? 'YES' : 'NO'} highlight={!data.discarded} />
+                                <Row label="Audit Leader ID" value={data.auditLeaderId} />
+                            </div>
+
+                        </div>
+                        {/* PDF Button */}
+                        <div className="p-4 border-t">
+                            <button onClick={handleExportPDF} className="w-full bg-red-600 text-white py-3 rounded-xl font-bold shadow-lg flex items-center justify-center gap-2 transform active:scale-95 transition">
+                                <i className="fas fa-file-pdf"></i> สร้างไฟล์ PDF
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const CNCForm = ({ auditorId, onSave, onCancel }) => {
+            const [step, setStep] = React.useState(1);
+            const [errors, setErrors] = React.useState({});
+            const [submitting, setSubmitting] = React.useState(false);
+            const [partDatabase, setPartDatabase] = React.useState([]);
+            const [lastUpdated, setLastUpdated] = React.useState(null);
+
+            // States
+            const [formData, setFormData] = React.useState({ auditType: 'Plan', technician: '', date: new Date().toISOString().split('T')[0], partNo: '', lotNo: '', finishTime: '' });
+            const [partRev, setPartRev] = React.useState('');
+            
+            // Smart Lot States
+            const [lotParts, setLotParts] = React.useState({ machine: '', yymm: '', running: '' });
+
+            const [checklist, setChecklist] = React.useState({});
+            const [otherInputs, setOtherInputs] = React.useState({});
+            const [step3Data, setStep3Data] = React.useState({ chk10_1: false, chk10_2: false, q10_3_split_qty: '0', q10_3_full_qty: '0', q10_4_split_qty: '0', q10_4_full_qty: '0', q10_5: '0', q10_6: '0', q10_7: 'เท่ากัน', reason_over10: '', leader_id: '', leader_sign: '', reason_mismatch: '' });
+            const [step4Data, setStep4Data] = React.useState({ discarded: false, auditLeaderId: '' });
+            
+            const [searchTerm, setSearchTerm] = React.useState('');
+            const [showDropdown, setShowDropdown] = React.useState(false);
+            const [filteredParts, setFilteredParts] = React.useState([]);
+
+            // Load Parts
+            React.useEffect(() => {
+                const savedParts = localStorage.getItem(DB_KEY_PARTS);
+                if (savedParts) { try { setPartDatabase(JSON.parse(savedParts)); setLastUpdated(localStorage.getItem(DB_KEY_PARTS_DATE)); } catch(e){} }
+            }, []);
+
+            // Smart Lot - YYMM
+            React.useEffect(() => {
+                if(formData.date) {
+                    const d = new Date(formData.date);
+                    const yy = String(d.getFullYear()).slice(-2);
+                    const mm = String(d.getMonth() + 1).padStart(2, '0');
+                    setLotParts(prev => ({ ...prev, yymm: yy + mm }));
+                }
+            }, [formData.date]);
+
+            // Smart Lot - Combine
+            React.useEffect(() => {
+                const machine = lotParts.machine.toUpperCase().trim();
+                const running = lotParts.running.trim();
+                if(machine || running) {
+                    const fullLot = `${machine}-${lotParts.yymm}-${running.padStart(3, '0')}`;
+                    setFormData(prev => ({ ...prev, lotNo: fullLot }));
+                } else {
+                    setFormData(prev => ({ ...prev, lotNo: '' }));
+                }
+            }, [lotParts]);
+
+            // Auto Calculate A
+            React.useEffect(() => {
+                const total = (parseInt(step3Data.q10_3_split_qty)||0) + (parseInt(step3Data.q10_3_full_qty)||0) + (parseInt(step3Data.q10_4_split_qty)||0) + (parseInt(step3Data.q10_4_full_qty)||0);
+                setStep3Data(p => ({...p, q10_5: String(total)}));
+            }, [step3Data.q10_3_split_qty, step3Data.q10_3_full_qty, step3Data.q10_4_split_qty, step3Data.q10_4_full_qty]);
+
+            const handleFileUpload = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    const lines = event.target.result.split(/\r\n|\n/).map(l => l.trim().replace(/^"|"$/g, '')).filter(l => l.length > 0);
+                    setPartDatabase(lines);
+                    const now = new Date().toLocaleString('th-TH');
+                    setLastUpdated(now);
+                    localStorage.setItem(DB_KEY_PARTS, JSON.stringify(lines));
+                    localStorage.setItem(DB_KEY_PARTS_DATE, now);
+                    alert(`Imported ${lines.length} parts.`);
+                };
+                reader.readAsText(file);
+            };
+
+            const handleSearchChange = (e) => {
+                const val = e.target.value;
+                setSearchTerm(val); setFormData(p => ({...p, partNo: val}));
+                if (val.length > 0) { setFilteredParts(partDatabase.filter(p => p.toLowerCase().includes(val.toLowerCase())).slice(0, 10)); setShowDropdown(true); } 
+                else setShowDropdown(false);
+            };
+
+            const simulateQRScan = () => setLotParts(prev => ({...prev, machine: 'K02', running: '001'}));
+
+            // --- VALIDATION LOGIC ---
+            const validateStep = (step) => {
+                const newErrors = {};
+                let isValid = true;
+
+                if (step === 1) {
+                    if (!formData.technician) { newErrors.technician = 'กรุณาเลือก Technician'; isValid = false; }
+                    if (!formData.partNo) { newErrors.partNo = 'กรุณาค้นหาหรือกรอก Part No.'; isValid = false; }
+                    if (!formData.lotNo || formData.lotNo.split('-').filter(p => p.length > 0).length < 3) { newErrors.lotNo = 'Lot No. ไม่ถูกต้องหรือว่างเปล่า'; isValid = false; }
+                    if (!formData.finishTime) { newErrors.finishTime = 'กรุณาระบุ Finish Time'; isValid = false; }
+                } else if (step === 2) {
+                    CHECKLIST_QUESTIONS_P2.forEach(q => {
+                        if (q.isMatrix) {
+                            q.subItems.forEach((_, i) => {
+                                if (!checklist[`${q.id}-${i}`]) { newErrors[`${q.id}-${i}`] = 'กรุณาตอบคำถามในทุกรายการย่อย'; isValid = false; }
+                            });
+                        } else {
+                            if (!checklist[q.id]) { newErrors[q.id] = 'กรุณาตอบคำถามในทุกข้อ'; isValid = false; }
+                            if (q.hasInput && checklist[q.id] === 'Other' && !otherInputs[q.id]) { newErrors[`${q.id}_input`] = 'กรุณากรอกรายละเอียด'; isValid = false; }
+                        }
+                    });
+                } else if (step === 3) {
+                    if (!step3Data.chk10_1) { newErrors.chk10_1 = 'กรุณายืนยัน 10.1 Clear Count'; isValid = false; }
+                    if (!step3Data.chk10_2) { newErrors.chk10_2 = 'กรุณายืนยัน 10.2 Preset'; isValid = false; }
+                    if (!step3Data.q10_6) { newErrors.q10_6 = 'กรุณาระบุ Monitor Count (B)'; isValid = false; }
+                    
+                    const isMismatch = step3Data.q10_6 !== '' && step3Data.q10_6 !== '0' && step3Data.q10_5 !== step3Data.q10_6;
+                    if (isMismatch && !step3Data.reason_mismatch) { newErrors.reason_mismatch = 'กรุณากรอกเหตุผลที่ไม่เท่ากัน'; isValid = false; }
+                    
+                    if (parseInt(step3Data.q10_5) > 10 && (!step3Data.reason_over10 || !step3Data.leader_id || !step3Data.leader_sign)) { newErrors.reason_over10 = 'กรุณากรอกเหตุผลและลงชื่อหัวหน้างาน'; isValid = false; }
+                    if (!step3Data.q10_7) { newErrors.q10_7 = 'กรุณาระบุ Result (A=B?)'; isValid = false; }
+                }
+
+                setErrors(newErrors);
+                return isValid;
+            };
+
+            const handleNextStep = () => {
+                if (validateStep(step)) {
+                    setStep(s => s + 1);
+                } else {
+                    alert("กรุณากรอกข้อมูล/ตอบคำถามให้ครบถ้วนก่อนดำเนินการต่อ");
+                }
+            };
+            // --- END VALIDATION LOGIC ---
+
+            const handleSubmit = async () => {
+                // Step 4 Validation (Final Check)
+                if (!step4Data.discarded) { alert("กรุณายืนยันการทิ้งงาน"); return; }
+                if (!step4Data.auditLeaderId) { alert("กรุณาระบุรหัสหัวหน้างาน"); return; }
+                
+                setSubmitting(true);
+                setTimeout(() => {
+                    const finalPartNo = formData.partNo + (partRev ? `#${partRev}` : '');
+
+                    const payload = { 
+                        ...formData, 
+                        partNo: finalPartNo,
+                        rawPartNo: formData.partNo,
+                        partRevision: partRev,
+                        ...checklist, 
+                        ...otherInputs, 
+                        ...step3Data, 
+                        ...step4Data, 
+                        auditorId, 
+                        timestamp: new Date().toLocaleString('th-TH') 
+                    };
+                    
+                    saveLog(payload);
+                    onSave();
+                    setSubmitting(false);
+                }, 500);
+            };
+
+            return (
+                <div className="mobile-container bg-sky-50 h-screen overflow-hidden flex flex-col">
+                    <div className="bg-white p-4 shadow-sm z-10 form-header-strip mb-2">
+                        <h1 className="text-lg font-bold text-slate-800 leading-tight">Re-Setting Machine Audit (CNC-1)</h1>
+                        <div className="mt-2 text-xs bg-sky-100 text-sky-800 px-2 py-1 rounded-full font-bold w-fit">Step {step} / 4</div>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-3 pb-24 space-y-3">
+                        {step === 1 && (
+                            <div className="space-y-3 fade-in">
+                                <div className="bg-white p-4 rounded-lg shadow-sm border border-slate-200">
+                                    <label className="block text-sm font-bold mb-2">Audit Type</label>
+                                    <div className="space-y-2">{['Plan', 'Repair'].map(opt=><label key={opt} className="flex items-center space-x-3 p-2 rounded border hover:bg-slate-50"><input type="radio" checked={formData.auditType===opt} onChange={()=>setFormData({...formData, auditType:opt})} className="custom-radio hidden"/><div className="w-4 h-4 rounded-full border flex items-center justify-center"><div className={`w-2 h-2 rounded-full ${formData.auditType===opt?'bg-sky-500':''}`}></div></div><span>{opt}</span></label>)}</div>
+                                </div>
+                                <div className={`bg-white p-4 rounded-lg shadow-sm border border-slate-200 ${errors.technician?'error-shake':''}`}><label className="block text-sm font-bold mb-2">Technician</label><select className="w-full p-2 border rounded" value={formData.technician} onChange={e=>setFormData({...formData, technician:e.target.value})}><option value="">Select</option>{TECHNICIANS.map(t=><option key={t} value={t}>{t}</option>)}</select></div>
+                                <div className="bg-white p-4 rounded-lg shadow-sm border border-slate-200"><label className="block text-sm font-bold mb-2">Date</label><input type="date" className="w-full p-2 border rounded" value={formData.date} onChange={e=>setFormData({...formData, date:e.target.value})}/></div>
+                                
+                                {/* --- LOT NO (Smart) --- */}
+                                <div className={`bg-white p-4 rounded-lg shadow-sm border border-slate-200 ${errors.lotNo?'error-shake':''}`}>
+                                    <div className="flex justify-between items-center mb-2">
+                                        <label className="block text-sm font-bold">Lot No. (Scanner)</label>
+                                        <button onClick={simulateQRScan} className="text-[10px] bg-slate-100 hover:bg-slate-200 text-slate-600 px-2 py-1 rounded border"><i className="fas fa-qrcode mr-1"></i>จำลองสแกน (K02-YYMM-001)</button>
+                                    </div>
+                                    <div className="flex gap-2 items-center">
+                                        <div className="w-1/3"><div className="text-[10px] text-slate-400 mb-1">M/C Code</div><input className="w-full p-2 border border-slate-300 rounded text-center font-bold text-sky-600 bg-sky-50 focus:bg-white focus:ring-2 focus:ring-sky-200 outline-none uppercase" value={lotParts.machine} onChange={e=>setLotParts({...lotParts, machine: e.target.value.toUpperCase()})} placeholder="K02" autoFocus /></div>
+                                        <div className="text-slate-300 font-bold">-</div>
+                                        <div className="w-1/4"><div className="text-[10px] text-slate-400 mb-1">YYMM</div><input className="w-full p-2 border border-slate-200 bg-slate-100 rounded text-center text-slate-500 select-none" value={lotParts.yymm} readOnly /></div>
+                                        <div className="text-slate-300 font-bold">-</div>
+                                        <div className="flex-1"><div className="text-[10px] text-slate-400 mb-1">Running</div><input type="number" className="w-full p-2 border border-slate-300 rounded text-center font-bold focus:ring-2 focus:ring-sky-200 outline-none" value={lotParts.running} onChange={e=>setLotParts({...lotParts, running: e.target.value})} placeholder="001" /></div>
+                                    </div>
+                                    <div className="mt-2 text-right text-xs text-slate-400">Result: <span className="font-bold text-slate-600">{formData.lotNo || '-'}</span></div>
+                                </div>
+
+                                {/* --- PART NO + REVISION --- */}
+                                <div className={`bg-white p-4 rounded-lg shadow-sm border border-slate-200 relative ${errors.partNo?'error-shake':''}`}>
+                                    <label className="block text-sm font-bold mb-2">Part No.</label>
+                                    <div className="mb-2 text-xs text-right text-slate-400">{partDatabase.length} Parts loaded <label className="text-sky-600 cursor-pointer ml-2">[Import CSV]<input type="file" className="hidden" accept=".csv" onChange={handleFileUpload}/></label></div>
+                                    
+                                    <div className="flex gap-2">
+                                        {/* Search Input */}
+                                        <div className="flex-1 relative">
+                                            <input className="w-full p-2 border rounded" value={searchTerm} onChange={handleSearchChange} placeholder="Search Part..." onFocus={()=>searchTerm && setShowDropdown(true)}/>
+                                            {showDropdown && <ul className="absolute z-20 w-full bg-white border shadow-xl max-h-40 overflow-y-auto mt-1 rounded">{filteredParts.map(p=><li key={p} onClick={()=>{setSearchTerm(p); setFormData({...formData, partNo:p}); setShowDropdown(false)}} className="p-2 hover:bg-sky-50 cursor-pointer border-b">{p}</li>)}</ul>}
+                                        </div>
+
+                                        {/* Revision Input */}
+                                        <div className="w-20 flex items-center bg-slate-100 rounded border border-slate-200 px-2" title="Part Revision (e.g. #1, #2)">
+                                            <span className="text-slate-400 mr-1 font-bold">#</span>
+                                            <input 
+                                                type="number" 
+                                                className="w-full bg-transparent outline-none font-bold text-slate-700 text-center" 
+                                                placeholder="-" 
+                                                value={partRev}
+                                                onChange={(e) => setPartRev(e.target.value)}
+                                            />
+                                        </div>
+                                    </div>
+                                    <div className="text-[10px] text-slate-400 mt-1 ml-1">* หากมีการแก้ไขให้ใส่เลข # (เช่น 1, 2)</div>
+                                </div>
+
+                                <div className={`bg-white p-4 rounded-lg shadow-sm border border-slate-200 ${errors.finishTime?'error-shake':''}`}><label className="block text-sm font-bold mb-2">Finish Time</label><input type="time" className="w-full p-2 border rounded" value={formData.finishTime} onChange={e=>setFormData({...formData, finishTime:e.target.value})}/></div>
+                            </div>
+                        )}
+                        {step === 2 && (
+                            <div className="space-y-3 fade-in">
+                                {CHECKLIST_QUESTIONS_P2.map(q => (
+                                    <div key={q.id} className={`bg-white p-4 rounded-lg shadow-sm border border-slate-200 ${errors[q.id] || (q.isMatrix && Object.keys(errors).some(k => k.startsWith(q.id))) || errors[`${q.id}_input`] ? 'error-shake' : ''}`}>
+                                        <div className="text-sm font-bold mb-2 text-slate-800">{q.question}</div>
+                                        {q.isMatrix ? 
+                                            q.subItems.map((sub,i)=>(
+                                                <div key={i} className={`mb-2 pb-2 border-b last:border-0 ${errors[`${q.id}-${i}`]?'bg-red-50 p-2 rounded -mx-2':''}`}>
+                                                    <div className="text-xs font-semibold mb-1 text-slate-600">{sub}</div>
+                                                    <div className="flex gap-2">
+                                                        {q.options.map(opt=><label key={opt} className="flex-1 cursor-pointer">
+                                                            <input type="radio" name={`${q.id}-${i}`} checked={checklist[`${q.id}-${i}`]===opt} onChange={()=>setChecklist({...checklist, [`${q.id}-${i}`]:opt})} className="custom-radio hidden"/>
+                                                            <div className="text-center p-1 border rounded text-xs bg-slate-50">{opt}</div>
+                                                        </label>)}
+                                                    </div>
+                                                </div>
+                                            ))
+                                            : 
+                                            <div className="flex gap-2">
+                                                {q.options.map(opt=><label key={opt} className="flex-1 cursor-pointer">
+                                                    <input type="radio" name={q.id} checked={checklist[q.id]===opt} onChange={()=>setChecklist({...checklist, [q.id]:opt})} className="custom-radio hidden"/>
+                                                    <div className="text-center p-2 border rounded text-sm bg-slate-50">{opt}</div>
+                                                </label>)}
+                                            </div>
+                                        }
+                                        {q.hasInput && checklist[q.id]==='Other' && <input className={`w-full border p-2 mt-2 rounded bg-slate-50 ${errors[`${q.id}_input`]? 'border-red-500':''}`} placeholder="Detail..." value={otherInputs[q.id]||''} onChange={e=>setOtherInputs({...otherInputs, [q.id]:e.target.value})}/>}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                        {step === 3 && (
+                            <div className="space-y-3 fade-in">
+                                <div className={`bg-white p-4 rounded-lg shadow-sm border border-slate-200 ${Object.keys(errors).some(k => k.startsWith('chk10_') || k.startsWith('q10_') || k.startsWith('reason_') || k.includes('leader_')) ? 'error-shake':''}`}>
+                                    <h3 className="font-bold border-b pb-2 mb-3 text-slate-800">10. Re-setting Count</h3>
+                                    <label className={`flex items-center gap-2 mb-3 p-2 rounded cursor-pointer ${step3Data.chk10_1 ? 'bg-emerald-50 border-emerald-300' : errors.chk10_1 ? 'bg-red-50 border-red-300' : 'bg-slate-50 border'}`}>
+                                        <input type="checkbox" checked={step3Data.chk10_1} onChange={e=>setStep3Data({...step3Data, chk10_1:e.target.checked})} className="custom-checkbox hidden"/> 
+                                        <div className="w-5 h-5 rounded border flex items-center justify-center transition custom-checkbox text-white"><i className="fas fa-check text-xs"></i></div>
+                                        <span className={`text-sm font-semibold ${errors.chk10_1 ? 'text-red-700' : ''}`}>10.1 Clear Count = 0</span>
+                                    </label>
+                                    <label className={`flex items-center gap-2 mb-3 p-2 rounded cursor-pointer ${step3Data.chk10_2 ? 'bg-emerald-50 border-emerald-300' : errors.chk10_2 ? 'bg-red-50 border-red-300' : 'bg-slate-50 border'}`}>
+                                        <input type="checkbox" checked={step3Data.chk10_2} onChange={e=>setStep3Data({...step3Data, chk10_2:e.target.checked})} className="custom-checkbox hidden"/> 
+                                        <div className="w-5 h-5 rounded border flex items-center justify-center transition custom-checkbox text-white"><i className="fas fa-check text-xs"></i></div>
+                                        <span className={`text-sm font-semibold ${errors.chk10_2 ? 'text-red-700' : ''}`}>10.2 Preset = 10</span>
+                                    </label>
+                                    <div className="mb-3 text-sm font-bold">10.3 Basket Qty</div>
+                                    <div className="flex gap-2 mb-3"><select className="flex-1 border p-2 rounded" value={step3Data.q10_3_split_qty} onChange={e=>setStep3Data({...step3Data, q10_3_split_qty:e.target.value})}>{NUM_OPTIONS.map(n=><option key={n} value={n}>Split: {n}</option>)}</select><select className="flex-1 border p-2 rounded" value={step3Data.q10_3_full_qty} onChange={e=>setStep3Data({...step3Data, q10_3_full_qty:e.target.value})}>{NUM_OPTIONS.map(n=><option key={n} value={n}>Full: {n}</option>)}</select></div>
+                                    <div className="mb-3 text-sm font-bold">10.4 Tech Qty</div>
+                                    <div className="flex gap-2 mb-3"><select className="flex-1 border p-2 rounded" value={step3Data.q10_4_split_qty} onChange={e=>setStep3Data({...step3Data, q10_4_split_qty:e.target.value})}>{NUM_OPTIONS.map(n=><option key={n} value={n}>Split: {n}</option>)}</select><select className="flex-1 border p-2 rounded" value={step3Data.q10_4_full_qty} onChange={e=>setStep3Data({...step3Data, q10_4_full_qty:e.target.value})}>{NUM_OPTIONS.map(n=><option key={n} value={n}>Full: {n}</option>)}</select></div>
+                                    <div className="bg-emerald-100 p-3 rounded text-center text-emerald-800 font-bold mb-3">Total (A): {step3Data.q10_5}</div>
+                                    
+                                    <div className="mb-3"><div className={`text-sm font-bold mb-1 ${errors.q10_6 ? 'text-red-600':''}`}>10.6 Monitor Count (B)</div><select className={`w-full border p-2 rounded ${errors.q10_6 ? 'border-red-500 bg-red-50':''}`} value={step3Data.q10_6} onChange={e=>setStep3Data({...step3Data, q10_6:e.target.value})}><option value="">Select</option>{NUM_OPTIONS.map(n=><option key={n} value={n}>{n}</option>)}<option value="B">B</option></select></div>
+                                    
+                                    {step3Data.q10_6 !== '' && step3Data.q10_6 !== '0' && step3Data.q10_5 !== step3Data.q10_6 && <textarea className={`w-full border p-2 rounded mb-3 ${errors.reason_mismatch ? 'border-red-500 bg-red-50':''}`} placeholder="Reason for mismatch..." value={step3Data.reason_mismatch} onChange={e=>setStep3Data({...step3Data, reason_mismatch:e.target.value})}/>}
+                                    
+                                    {parseInt(step3Data.q10_5)>10 && 
+                                        <div className={`p-2 rounded border mb-3 ${errors.reason_over10 || errors.leader_id || errors.leader_sign ? 'bg-red-50 border-red-400':'bg-orange-50 border-orange-200'}`}>
+                                            <textarea className={`w-full border p-2 rounded mb-2 ${errors.reason_over10 ? 'border-red-500 bg-red-100':''}`} placeholder="Reason over 10..." value={step3Data.reason_over10} onChange={e=>setStep3Data({...step3Data, reason_over10:e.target.value})}/>
+                                            <div className="flex gap-2">
+                                                <input placeholder="Leader ID" className={`flex-1 border p-2 rounded ${errors.leader_id ? 'border-red-500 bg-red-100':''}`} value={step3Data.leader_id} onChange={e=>setStep3Data({...step3Data, leader_id:e.target.value})}/>
+                                                <input placeholder="Sign" className={`flex-1 border p-2 rounded ${errors.leader_sign ? 'border-red-500 bg-red-100':''}`} value={step3Data.leader_sign} onChange={e=>setStep3Data({...step3Data, leader_sign:e.target.value})}/>
+                                            </div>
+                                        </div>
+                                    }
+                                    <div className={`p-3 rounded ${errors.q10_7 ? 'bg-red-100 border border-red-300' : 'bg-yellow-50'}`}>
+                                        <div className="text-sm font-bold mb-2">10.7 Result (A=B?)</div>
+                                        <div className="flex gap-2">
+                                            {['เท่ากัน','ไม่เท่ากัน'].map(opt=><label key={opt} className="flex-1 cursor-pointer">
+                                                <input type="radio" name="res" checked={step3Data.q10_7===opt} onChange={()=>setStep3Data({...step3Data, q10_7:opt})} className="custom-radio hidden"/>
+                                                <div className="text-center p-2 border rounded bg-white">{opt}</div>
+                                            </label>)}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                        {step === 4 && (
+                            <div className="fade-in bg-white p-6 rounded-lg text-center shadow-sm">
+                                <h3 className="text-xl font-bold mb-4">Confirm Discard</h3>
+                                <div className="bg-red-50 text-red-700 p-4 rounded text-sm mb-4"><strong>Warning:</strong> Discard all setting parts into NG box.</div>
+                                <label className={`flex items-center justify-center gap-3 p-4 border rounded hover:bg-slate-50 mb-4 cursor-pointer ${step4Data.discarded ? 'bg-green-50 border-green-400' : 'bg-white'}`}>
+                                    <input type="checkbox" checked={step4Data.discarded} onChange={e=>setStep4Data({...step4Data, discarded:e.target.checked})} className="w-5 h-5"/> 
+                                    <span className={`font-bold ${step4Data.discarded ? 'text-green-700' : ''}`}>I have discarded the parts</span>
+                                </label>
+                                <input className={`w-full p-3 border rounded text-center text-lg mb-2 ${!step4Data.auditLeaderId && step4Data.discarded ? 'border-red-500 bg-red-50' : ''}`} placeholder="Audit Leader ID" value={step4Data.auditLeaderId} onChange={e=>setStep4Data({...step4Data, auditLeaderId:e.target.value})}/>
+                            </div>
+                        )}
+                    </div>
+                    <div className="p-4 bg-white border-t flex gap-3 z-20">
+                        {step > 1 ? <button onClick={()=>setStep(s=>s-1)} className="px-6 py-3 rounded bg-slate-100 font-bold">Back</button> : <button onClick={onCancel} className="px-4 py-3 text-slate-500">Cancel</button>}
+                        {step < 4 ? <button onClick={handleNextStep} className="flex-1 bg-sky-600 text-white py-3 rounded font-bold shadow">Next</button> : <button onClick={handleSubmit} disabled={submitting} className="flex-1 bg-green-600 text-white py-3 rounded font-bold shadow">{submitting?'Saving...':'Submit'}</button>}
+                    </div>
+                </div>
+            );
+        };
+
+        const Dashboard = ({ onNew, onLogout }) => {
+            const [logs, setLogs] = React.useState([]);
+            const [viewLog, setViewLog] = React.useState(null);
+            // เพิ่ม State สำหรับคำค้นหา
+            const [searchTerm, setSearchTerm] = React.useState(''); 
+
+            React.useEffect(() => setLogs(getLogs()), []);
+
+            // กรองข้อมูลตาม Lot No. หรือ Part No.
+            const filteredLogs = React.useMemo(() => {
+                if (!searchTerm) {
+                    return logs;
+                }
+                const lowerCaseSearch = searchTerm.toLowerCase();
+                return logs.filter(log => 
+                    (log.lotNo && log.lotNo.toLowerCase().includes(lowerCaseSearch)) ||
+                    (log.partNo && log.partNo.toLowerCase().includes(lowerCaseSearch))
+                );
+            }, [logs, searchTerm]);
+
+            const exportMasterCSV = () => {
+                if (logs.length === 0) return alert("ไม่มีข้อมูล");
+                
+                // 1. Fixed Headers (เปลี่ยนเป็นชื่อเต็ม/ไทย)
+                const fixedHeaders = ["เวลาบันทึก", "ผู้ตรวจ", "ประเภทการตรวจสอบ", "วันที่ตรวจสอบ", "ช่างเทคนิค", "หมายเลขชิ้นส่วน", "หมายเลขลอต", "เวลาเสร็จสิ้น"];
+                
+                const matrixQ = CHECKLIST_QUESTIONS_P2.find(q=>q.isMatrix);
+                // 2. Matrix Headers (Q1): ใช้ชื่อเต็มของรายการย่อย
+                const matrixHeaders = matrixQ.subItems.map(s => `Q1.${s.replace(/[^\w\s\.]/g, '').trim().replace(/\s+/g, '_')}`);
+                
+                // 3. Other Qs Headers (Q2-Q9): ใช้ข้อความคำถามเต็ม
+                const otherQHeaders = CHECKLIST_QUESTIONS_P2
+                    .filter(q => !q.isMatrix)
+                    .map(q => q.question); 
+                
+                // 4. Calculated Headers (Q10): เปลี่ยนเป็นชื่อเต็ม/ไทย
+                const calcHeaders = [
+                    "Q10.1_การเคลียร์งาน", 
+                    "Q10.2_การตั้งค่าล่วงหน้า", 
+                    "Q10.3_จำนวนเศษ", 
+                    "Q10.3_จำนวนเต็ม", 
+                    "Q10.4_จำนวนเศษ_OK", 
+                    "Q10.4_จำนวนเต็ม_OK", 
+                    "Q10_รวม_A", 
+                    "Q10_จำนวนที่มอนิเตอร์_B", 
+                    "เหตุผลความไม่ตรงกัน", 
+                    "เหตุผลการเกิน 10 นาที", 
+                    "รหัสหัวหน้า", 
+                    "ลายเซ็นหัวหน้า", 
+                    "ผลลัพธ์_A=B", 
+                    "ถูกทิ้ง", 
+                    "ผู้นำการตรวจสอบ"
+                ];
+
+                const allHeaders = [...fixedHeaders, ...matrixHeaders, ...otherQHeaders, ...calcHeaders];
+                let csv = "\ufeff" + allHeaders.join(",") + "\n";
+                logs.forEach(l => {
+                    const row = [];
+                    row.push(l.timestamp, l.auditorId, l.auditType, l.date, l.technician, l.partNo, l.lotNo, l.finishTime);
+                    
+                    // Matrix Q1
+                    matrixQ.subItems.forEach((_, i) => row.push(l[`${matrixQ.id}-${i}`] || '-'));
+                    
+                    // Other Qs
+                    CHECKLIST_QUESTIONS_P2.filter(q=>!q.isMatrix).forEach(q => { 
+                        let val = l[q.id] || '-'; 
+                        if(val === 'Other') val += `: ${l[`${q.id}_input` ]||''}`; 
+                        row.push(val); 
+                    });
+                    
+                    // Count Q10
+                    row.push(l.chk10_1?'Yes':'No', l.chk10_2?'Yes':'No', l.q10_3_split_qty, l.q10_3_full_qty, l.q10_4_split_qty, l.q10_4_full_qty, l.q10_5, l.q10_6, l.reason_mismatch, l.reason_over10, l.leader_id, l.leader_sign, l.q10_7, l.discarded?'Yes':'No', l.auditLeaderId);
+                    csv += row.map(v => `"${String(v||'').replace(/"/g, '""')}"`).join(",") + "\n";
+                });
+                const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                const link = document.createElement("a");
+                link.href = URL.createObjectURL(blob);
+                link.download = `CNC_Master_Audit_${new Date().toISOString().slice(0,10)}.csv`;
+                document.body.appendChild(link); link.click(); document.body.removeChild(link);
+            };
+
+            return (
+                <div className="flex flex-col h-screen bg-slate-50">
+                    <div className="bg-white p-5 shadow-sm z-10 flex justify-between items-center sticky top-0">
+                        <h1 className="font-bold text-lg text-slate-800"><i className="fas fa-database text-sky-500 mr-2"></i>Audit Master</h1>
+                        <button onClick={onLogout} className="text-red-400 p-2"><i className="fas fa-sign-out-alt"></i></button>
+                    </div>
+                    <div className="p-4 space-y-4 flex-1 overflow-y-auto">
+                        <div className="flex gap-2">
+                            <button onClick={onNew} className="flex-1 bg-sky-600 text-white py-3 rounded-xl font-bold shadow flex justify-center items-center gap-2 transform active:scale-95 transition"><i className="fas fa-plus"></i> New Audit</button>
+                            <button onClick={exportMasterCSV} className="bg-emerald-600 text-white px-4 rounded-xl font-bold shadow flex justify-center items-center gap-2 transform active:scale-95 transition"><i className="fas fa-file-csv"></i> Master CSV</button>
+                        </div>
+                        
+                        {/* ช่องค้นหา Lot No. / Part No. */}
+                        <div className="relative">
+                            <input 
+                                type="text"
+                                placeholder="ค้นหาด้วย Lot No. หรือ Part No..."
+                                value={searchTerm}
+                                onChange={(e) => setSearchTerm(e.target.value)}
+                                className="w-full p-3 pl-10 border rounded-xl shadow-inner focus:ring-2 focus:ring-sky-300 outline-none"
+                            />
+                            <i className="fas fa-search absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400"></i>
+                        </div>
+
+                        <div className="mt-4 space-y-2">
+                            {/* แสดงผลจาก filteredLogs */}
+                            {filteredLogs.length === 0 ? <div className="text-center py-10 text-slate-400">ไม่พบข้อมูล</div> : filteredLogs.map((l, i) => (
+                                <div key={i} className="bg-white p-4 rounded-xl border shadow-sm flex justify-between items-center group hover:border-sky-300 transition cursor-pointer" onClick={()=>setViewLog(l)}>
+                                    <div>
+                                        <div className="font-bold text-sky-700">{l.partNo} <span className="text-xs text-slate-400 font-normal">Lot: {l.lotNo}</span></div>
+                                        <div className="text-xs text-slate-500 mt-1"><i className="fas fa-user mr-1"></i> {l.technician} &bull; {l.date}</div>
+                                    </div>
+                                    <button onClick={(e)=>{e.stopPropagation(); setViewLog(l);}} className="w-10 h-10 rounded-full bg-slate-50 text-slate-400 group-hover:bg-sky-50 group-hover:text-sky-500 flex items-center justify-center transition"><i className="fas fa-eye"></i></button>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                    {viewLog && <AuditDetailModal data={viewLog} onClose={()=>setViewLog(null)} />}
+                </div>
+            );
+        };
+
+        const App = () => {
+            const [view, setView] = React.useState('loading');
+            const [user, setUser] = React.useState(null);
+            React.useEffect(() => { const u = localStorage.getItem(DB_KEY_USER); if(u){ setUser(u); setView('dashboard'); } else setView('login'); }, []);
+            const handleLogin = (u) => { localStorage.setItem(DB_KEY_USER, u); setUser(u); setView('dashboard'); };
+            const handleLogout = () => { localStorage.removeItem(DB_KEY_USER); setUser(null); setView('login'); };
+            if(view === 'login') return <LoginScreen onLogin={handleLogin} />;
+            if(view === 'form') return <CNCForm auditorId={user} onSave={()=>setView('dashboard')} onCancel={()=>setView('dashboard')} />;
+            return <Dashboard onNew={()=>setView('form')} onLogout={handleLogout} />;
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
